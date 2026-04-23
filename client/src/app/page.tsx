@@ -19,7 +19,7 @@ interface Comment {
   created_at: string;
 }
 
-const API_BASE = 'http://localhost:5000/api';
+const API_BASE = 'https://seminarkurs-herden-backend-ffd2625dfe57.herokuapp.com/api';
 
 export default function Home() {
   const [posts, setPosts] = useState<Post[]>([]);
@@ -215,7 +215,7 @@ function PostCard({ post, userName, userId, likedPosts, likedComments, onLikePos
   return (
     <div className="p-4">
       {post.text && <p className="mb-2">{post.text}</p>}
-      {post.image && <img src={`http://localhost:5000/uploads/${post.image}`} alt="Post" className="w-full mb-2" />}
+      {post.image && <img src={`https://seminarkurs-herden-backend-ffd2625dfe57.herokuapp.com/uploads/${post.image}`} alt="Post" className="w-full mb-2" />}"w-full mb-2" /
       <div className="flex justify-between items-center">
         <button onClick={() => onLikePost(post.id)} disabled={likedPosts.has(post.id)} className="text-blue-500">
           Like ({post.likes})
