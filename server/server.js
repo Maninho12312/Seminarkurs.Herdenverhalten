@@ -1,6 +1,5 @@
 const express = require('express');
 const cors = require('cors');
-const sqlite3 = require('sqlite3').verbose();
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -8,6 +7,34 @@ require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+// JSON file paths
+const POSTS_FILE = path.join(__dirname, 'posts.json');
+const COMMENTS_FILE = path.join(__dirname, 'comments.json');
+const LIKES_FILE = path.join(__dirname, 'likes.json');
+
+// Helper functions for JSON operations
+function readJSON(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) {
+      fs.writeFileSync(filePath, JSON.stringify([]));
+      return [];
+    }
+    const data = fs.readFileSync(filePath, 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    console.error('Error reading JSON file:', error);
+    return [];
+  }
+}
+
+function writeJSON(filePath, data) {
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+  } catch (error) {
+    console.error('Error writing JSON file:', error);
+  }
+}
 
 // Middleware
 app.use(cors({
@@ -35,47 +62,14 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// Database
-const db = new sqlite3.Database(process.env.DB_PATH);
-
-// Initialize database
-db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS posts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    text TEXT,
-    image TEXT,
-    likes INTEGER DEFAULT 0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
-
-  db.run(`CREATE TABLE IF NOT EXISTS comments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    post_id INTEGER,
-    user_name TEXT,
-    text TEXT,
-    likes INTEGER DEFAULT 0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (post_id) REFERENCES posts (id)
-  )`);
-
-  db.run(`CREATE TABLE IF NOT EXISTS likes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT,
-    post_id INTEGER,
-    comment_id INTEGER,
-    type TEXT,
-    UNIQUE(user_id, post_id, comment_id)
-  )`);
-});
-
 // Routes
 
 // Get all posts
 app.get('/api/posts', (req, res) => {
-  db.all('SELECT * FROM posts ORDER BY created_at DESC', [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(rows);
-  });
+  const posts = readJSON(POSTS_FILE);
+  // Sort by created_at descending
+  posts.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  res.json(posts);
 });
 
 // Create post (admin only)
@@ -84,53 +78,100 @@ app.post('/api/posts', upload.single('image'), (req, res) => {
   if (password !== process.env.ADMIN_PASSWORD) {
     return res.status(403).json({ error: 'Unauthorized' });
   }
-  const image = req.file ? req.file.filename : null;
-  db.run('INSERT INTO posts (text, image) VALUES (?, ?)', [text, image], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ id: this.lastID });
-  });
+  
+  const posts = readJSON(POSTS_FILE);
+  const newPost = {
+    id: Date.now(),
+    text: text || null,
+    image: req.file ? req.file.filename : null,
+    likes: 0,
+    created_at: new Date().toISOString()
+  };
+  
+  posts.push(newPost);
+  writeJSON(POSTS_FILE, posts);
+  
+  res.json({ id: newPost.id });
 });
 
 // Get comments for a post
 app.get('/api/posts/:id/comments', (req, res) => {
-  const postId = req.params.id;
-  db.all('SELECT * FROM comments WHERE post_id = ? ORDER BY created_at ASC', [postId], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(rows);
-  });
+  const postId = parseInt(req.params.id);
+  const comments = readJSON(COMMENTS_FILE);
+  const postComments = comments.filter(comment => comment.post_id === postId);
+  // Sort by created_at ascending
+  postComments.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  res.json(postComments);
 });
 
 // Add comment
 app.post('/api/posts/:id/comments', (req, res) => {
-  const postId = req.params.id;
+  const postId = parseInt(req.params.id);
   const { user_name, text } = req.body;
-  db.run('INSERT INTO comments (post_id, user_name, text) VALUES (?, ?, ?)', [postId, user_name || 'Anonym', text], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ id: this.lastID });
-  });
+  
+  const comments = readJSON(COMMENTS_FILE);
+  const newComment = {
+    id: Date.now(),
+    post_id: postId,
+    user_name: user_name || 'Anonym',
+    text: text,
+    likes: 0,
+    created_at: new Date().toISOString()
+  };
+  
+  comments.push(newComment);
+  writeJSON(COMMENTS_FILE, comments);
+  
+  res.json({ id: newComment.id });
 });
 
 // Add like
 app.post('/api/likes', (req, res) => {
   const { user_id, post_id, comment_id, type } = req.body;
+  
+  const likes = readJSON(LIKES_FILE);
+  
   // Check if already liked
-  const checkQuery = comment_id ? 'SELECT id FROM likes WHERE user_id = ? AND comment_id = ?' : 'SELECT id FROM likes WHERE user_id = ? AND post_id = ?';
-  const checkParams = comment_id ? [user_id, comment_id] : [user_id, post_id];
-  db.get(checkQuery, checkParams, (err, row) => {
-    if (err) return res.status(500).json({ error: err.message });
-    if (row) return res.status(400).json({ error: 'Already liked' });
-    // Insert like
-    db.run('INSERT INTO likes (user_id, post_id, comment_id, type) VALUES (?, ?, ?, ?)', [user_id, post_id, comment_id, type], function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      // Update likes count
-      const updateTable = type === 'comment' ? 'comments' : 'posts';
-      const updateId = type === 'comment' ? comment_id : post_id;
-      db.run(`UPDATE ${updateTable} SET likes = likes + 1 WHERE id = ?`, [updateId], (err) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ success: true });
-      });
-    });
-  });
+  const existingLike = likes.find(like => 
+    like.user_id === user_id && 
+    ((type === 'post' && like.post_id === post_id) || 
+     (type === 'comment' && like.comment_id === comment_id))
+  );
+  
+  if (existingLike) {
+    return res.status(400).json({ error: 'Already liked' });
+  }
+  
+  // Add like
+  const newLike = {
+    id: Date.now(),
+    user_id,
+    post_id: type === 'post' ? post_id : null,
+    comment_id: type === 'comment' ? comment_id : null,
+    type
+  };
+  
+  likes.push(newLike);
+  writeJSON(LIKES_FILE, likes);
+  
+  // Update likes count
+  if (type === 'post') {
+    const posts = readJSON(POSTS_FILE);
+    const post = posts.find(p => p.id === post_id);
+    if (post) {
+      post.likes += 1;
+      writeJSON(POSTS_FILE, posts);
+    }
+  } else if (type === 'comment') {
+    const comments = readJSON(COMMENTS_FILE);
+    const comment = comments.find(c => c.id === comment_id);
+    if (comment) {
+      comment.likes += 1;
+      writeJSON(COMMENTS_FILE, comments);
+    }
+  }
+  
+  res.json({ success: true });
 });
 
 // Admin add comment
@@ -139,10 +180,21 @@ app.post('/api/admin/comments', (req, res) => {
   if (password !== process.env.ADMIN_PASSWORD) {
     return res.status(403).json({ error: 'Unauthorized' });
   }
-  db.run('INSERT INTO comments (post_id, user_name, text) VALUES (?, ?, ?)', [post_id, 'Admin', text], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ id: this.lastID });
-  });
+  
+  const comments = readJSON(COMMENTS_FILE);
+  const newComment = {
+    id: Date.now(),
+    post_id: parseInt(post_id),
+    user_name: 'Admin',
+    text: text,
+    likes: 0,
+    created_at: new Date().toISOString()
+  };
+  
+  comments.push(newComment);
+  writeJSON(COMMENTS_FILE, comments);
+  
+  res.json({ id: newComment.id });
 });
 
 app.listen(PORT, () => {
